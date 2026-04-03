@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Deal Finder</title>
+  <style>
+    :root {
+      --bg: #0b0f12;
+      --panel: rgba(16, 22, 28, 0.88);
+      --panel-strong: rgba(21, 28, 35, 0.96);
+      --line: rgba(161, 186, 206, 0.16);
+      --line-strong: rgba(161, 186, 206, 0.28);
+      --text: #edf3f8;
+      --muted: #8ea0b1;
+      --accent: #d9f06b;
+      --accent-ink: #091016;
+      --chip: #131c23;
+      --shadow: 0 24px 60px rgba(0, 0, 0, 0.42);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      padding: 32px 18px 56px;
+      color: var(--text);
+      font-family: Georgia, "Times New Roman", serif;
+      background:
+        radial-gradient(circle at top left, rgba(217, 240, 107, 0.12), transparent 28%),
+        radial-gradient(circle at top right, rgba(85, 138, 255, 0.12), transparent 24%),
+        linear-gradient(180deg, #11171c 0%, #0b0f12 55%, #070a0c 100%);
+    }
+
+    .page {
+      width: min(1080px, 100%);
+      margin: 0 auto;
+    }
+
+    .hero {
+      margin-bottom: 26px;
+      padding: 28px;
+      border: 1px solid var(--line);
+      border-radius: 28px;
+      background: var(--panel);
+      backdrop-filter: blur(12px);
+      box-shadow: var(--shadow);
+    }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--accent);
+      font-size: 12px;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      font-family: "Courier New", monospace;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(2.6rem, 8vw, 5rem);
+      line-height: 0.95;
+      letter-spacing: 0.04em;
+      font-weight: 400;
+    }
+
+    .sub {
+      margin: 12px 0 0;
+      max-width: 720px;
+      color: var(--muted);
+      font-size: 1rem;
+      line-height: 1.6;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 320px minmax(0, 1fr);
+      gap: 22px;
+      align-items: start;
+    }
+
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      background: var(--panel);
+      backdrop-filter: blur(12px);
+      box-shadow: var(--shadow);
+    }
+
+    .controls {
+      padding: 22px;
+      position: sticky;
+      top: 20px;
+    }
+
+    .results-panel {
+      padding: 22px;
+      min-height: 420px;
+    }
+
+    .section-title {
+      margin: 0 0 14px;
+      font-size: 0.86rem;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-family: "Courier New", monospace;
+    }
+
+    .field-grid {
+      display: grid;
+      gap: 12px;
+    }
+
+    .field-grid.two {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    label {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 0.75rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-family: "Courier New", monospace;
+    }
+
+    input,
+    select,
+    button {
+      width: 100%;
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      padding: 14px 16px;
+      color: var(--text);
+      background: rgba(11, 15, 18, 0.82);
+      font: inherit;
+      transition: border-color 0.2s ease, transform 0.2s ease, background 0.2s ease;
+    }
+
+    input::placeholder {
+      color: #66798b;
+    }
+
+    input:focus,
+    select:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+
+    button {
+      margin-top: 6px;
+      border: none;
+      background: linear-gradient(135deg, var(--accent), #eff8ba);
+      color: var(--accent-ink);
+      font-family: "Courier New", monospace;
+      font-size: 0.88rem;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      cursor: pointer;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+    }
+
+    .button-row {
+      display: grid;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .button-secondary {
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid var(--line-strong);
+    }
+
+    .results-topbar {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: flex-end;
+      margin-bottom: 20px;
+    }
+
+    .results-topbar h2 {
+      margin: 0;
+      font-size: 1.5rem;
+      font-weight: 400;
+    }
+
+    .results-meta {
+      color: var(--muted);
+      font-size: 0.95rem;
+      line-height: 1.5;
+      text-align: right;
+    }
+
+    .status {
+      margin: 0 0 18px;
+      color: var(--muted);
+      min-height: 24px;
+      font-size: 0.98rem;
+    }
+
+    .results {
+      display: grid;
+      gap: 14px;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      padding: 18px;
+      background: var(--panel-strong);
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 18px;
+      cursor: pointer;
+      transition: transform 0.18s ease, border-color 0.18s ease, background 0.18s ease;
+    }
+
+    .card:hover {
+      transform: translateY(-2px);
+      border-color: var(--line-strong);
+      background: rgba(24, 32, 40, 0.98);
+    }
+
+    .card-title {
+      margin: 0 0 10px;
+      font-size: 1.08rem;
+      line-height: 1.4;
+    }
+
+    .card-meta,
+    .card-note {
+      color: var(--muted);
+      font-size: 0.94rem;
+      line-height: 1.5;
+    }
+
+    .chips {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+    }
+
+    .chip {
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: var(--chip);
+      border: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 0.78rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      font-family: "Courier New", monospace;
+    }
+
+    .price-block {
+      min-width: 130px;
+      text-align: right;
+    }
+
+    .total {
+      display: block;
+      font-size: 1.9rem;
+      line-height: 1;
+    }
+
+    .price-detail {
+      display: block;
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 0.9rem;
+      line-height: 1.4;
+    }
+
+    .empty {
+      padding: 28px 22px;
+      border: 1px dashed var(--line-strong);
+      border-radius: 20px;
+      color: var(--muted);
+      text-align: center;
+      background: rgba(11, 15, 18, 0.35);
+    }
+
+    .source-stats {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+    }
+
+    .stat {
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: rgba(11, 15, 18, 0.7);
+      border: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 0.82rem;
+      font-family: "Courier New", monospace;
+    }
+
+    @media (max-width: 900px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+
+      .controls {
+        position: static;
+      }
+    }
+
+    @media (max-width: 640px) {
+      body {
+        padding: 18px 12px 38px;
+      }
+
+      .hero,
+      .controls,
+      .results-panel {
+        padding: 18px;
+      }
+
+      .field-grid.two,
+      .card {
+        grid-template-columns: 1fr;
+      }
+
+      .results-topbar {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      .results-meta,
+      .price-block {
+        text-align: left;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <section class="hero">
+      <p class="eyebrow">Live Resale Search</p>
+      <h1>Deal Finder</h1>
+      <p class="sub">
+        Search Vinted and eBay together, filter the noise, and sort by the cheapest real total.
+      </p>
+    </section>
+
+    <div class="layout">
+      <aside class="panel controls">
+        <p class="section-title">Search Setup</p>
+        <div class="field-grid">
+          <div>
+            <label for="item">Item</label>
+            <input id="item" type="text" placeholder="levis 501 w40" />
+          </div>
+          <div>
+            <label for="location">Location</label>
+            <input id="location" type="text" placeholder="Madrid" />
+          </div>
+        </div>
+
+        <p class="section-title" style="margin-top: 20px;">Filters</p>
+        <div class="field-grid two">
+          <div>
+            <label for="platform">Platform</label>
+            <select id="platform">
+              <option value="all">All</option>
+              <option value="Vinted">Vinted</option>
+              <option value="eBay">eBay</option>
+              <option value="Wallapop">Wallapop</option>
+            </select>
+          </div>
+          <div>
+            <label for="sort">Sort</label>
+            <select id="sort">
+              <option value="lowest-total">Lowest Total</option>
+              <option value="best-match">Best Match</option>
+              <option value="price-only">Lowest Item Price</option>
+            </select>
+          </div>
+          <div>
+            <label for="maxPrice">Max Total</label>
+            <input id="maxPrice" type="number" min="0" step="0.01" placeholder="80" />
+          </div>
+          <div>
+            <label for="size">Size</label>
+            <input id="size" type="text" placeholder="w40 / xl / 32" />
+          </div>
+          <div>
+            <label for="condition">Condition</label>
+            <select id="condition">
+              <option value="all">All</option>
+              <option value="new">New</option>
+              <option value="very good">Very Good</option>
+              <option value="good">Good</option>
+            </select>
+          </div>
+          <div>
+            <label for="excludeWords">Exclude Words</label>
+            <input id="excludeWords" type="text" placeholder="shorts women kids" />
+          </div>
+        </div>
+
+        <div class="button-row">
+          <button id="searchButton" type="button">Run Search</button>
+          <button id="resetButton" class="button-secondary" type="button">Reset Filters</button>
+        </div>
+
+        <div class="source-stats" id="sourceStats"></div>
+      </aside>
+
+      <main class="panel results-panel">
+        <div class="results-topbar">
+          <div>
+            <p class="section-title">Results</p>
+            <h2 id="resultsTitle">Ready to search</h2>
+          </div>
+          <div class="results-meta" id="resultsMeta">No search yet.</div>
+        </div>
+
+        <p class="status" id="status">Try something specific like "levis 501 w40".</p>
+        <div class="results" id="results"></div>
+      </main>
+    </div>
+  </div>
+
+  <script>
+    const fields = {
+      item: document.getElementById('item'),
+      location: document.getElementById('location'),
+      platform: document.getElementById('platform'),
+      sort: document.getElementById('sort'),
+      maxPrice: document.getElementById('maxPrice'),
+      size: document.getElementById('size'),
+      condition: document.getElementById('condition'),
+      excludeWords: document.getElementById('excludeWords')
+    };
+
+    const resultsEl = document.getElementById('results');
+    const statusEl = document.getElementById('status');
+    const resultsTitleEl = document.getElementById('resultsTitle');
+    const resultsMetaEl = document.getElementById('resultsMeta');
+    const sourceStatsEl = document.getElementById('sourceStats');
+
+    function formatMoney(value) {
+      return new Intl.NumberFormat('en-GB', {
+        style: 'currency',
+        currency: 'EUR'
+      }).format(value);
+    }
+
+    function getParams() {
+      const params = new URLSearchParams();
+
+      Object.entries(fields).forEach(([key, input]) => {
+        const value = input.value.trim();
+        if (value && value !== 'all') {
+          params.set(key, value);
+        }
+      });
+
+      return params;
+    }
+
+    function renderStats(meta) {
+      sourceStatsEl.innerHTML = '';
+
+      if (!meta || !meta.sources) {
+        return;
+      }
+
+      const stats = [
+        `Vinted: ${meta.sources.vinted}`,
+        `eBay: ${meta.sources.ebay}`,
+        `Wallapop: ${meta.sources.wallapop || 0}`,
+        `Shown: ${meta.totalFound}`
+      ];
+
+      stats.forEach((text) => {
+        const chip = document.createElement('div');
+        chip.className = 'stat';
+        chip.textContent = text;
+        sourceStatsEl.appendChild(chip);
+      });
+    }
+
+    function renderEmpty(message) {
+      resultsEl.innerHTML = `<div class="empty">${message}</div>`;
+    }
+
+    function renderResults(results) {
+      resultsEl.innerHTML = '';
+
+      results.forEach((result) => {
+        const card = document.createElement('article');
+        card.className = 'card';
+        card.innerHTML = `
+          <div>
+            <div class="chips">
+              <span class="chip">${result.platform}</span>
+              <span class="chip">${result.location}</span>
+            </div>
+            <h3 class="card-title">${result.title}</h3>
+            <div class="card-meta">Item ${formatMoney(result.price)} + shipping ${formatMoney(result.shipping)} to ${result.buyerLocation}</div>
+            <div class="card-note">${result.shippingNote}. Seller side: ${result.sellerCountry || 'Unknown'}.</div>
+          </div>
+          <div class="price-block">
+            <span class="total">${formatMoney(result.total)}</span>
+            <span class="price-detail">total landed price</span>
+          </div>
+        `;
+        card.onclick = () => window.open(result.url, '_blank', 'noopener');
+        resultsEl.appendChild(card);
+      });
+    }
+
+    async function search() {
+      const item = fields.item.value.trim();
+
+      if (!item) {
+        statusEl.textContent = 'Add an item first.';
+        renderEmpty('No search yet.');
+        return;
+      }
+
+      statusEl.textContent = 'Searching live listings...';
+      resultsTitleEl.textContent = 'Searching';
+      resultsMetaEl.textContent = 'Pulling Vinted, eBay, and Wallapop together.';
+      renderEmpty('Loading results...');
+
+      try {
+        const params = getParams();
+        const res = await fetch(`/search?${params.toString()}`);
+
+        if (!res.ok) {
+          throw new Error(`Request failed with status ${res.status}`);
+        }
+
+        const data = await res.json();
+        const results = data.results || [];
+        const meta = data.meta || null;
+
+        renderStats(meta);
+        resultsTitleEl.textContent = `"${item}"`;
+        resultsMetaEl.textContent = meta
+          ? `${meta.totalFound} matches after filtering.${meta.destination && meta.destination.known ? ` Shipping estimated to ${meta.destination.input}.` : ''}`
+          : `${results.length} matches found.`;
+
+        if (!results.length) {
+          const pulled = meta && meta.sources
+            ? `Fetched Vinted ${meta.sources.vinted}, eBay ${meta.sources.ebay}, Wallapop ${meta.sources.wallapop || 0}, but none passed the filters.`
+            : 'No close matches. Try loosening filters or removing excluded words.';
+          statusEl.textContent = pulled;
+          renderEmpty('Nothing survived the filters this round.');
+          return;
+        }
+
+        statusEl.textContent = 'Live search complete.';
+        renderResults(results);
+      } catch (error) {
+        statusEl.textContent = 'Cannot reach the app server. Start it with npm.cmd start and reload localhost:3000.';
+        resultsTitleEl.textContent = 'Connection Problem';
+        resultsMetaEl.textContent = 'The browser could not reach the backend.';
+        renderEmpty('The site could not connect to the search server.');
+      }
+    }
+
+    function resetFilters() {
+      fields.platform.value = 'all';
+      fields.sort.value = 'lowest-total';
+      fields.maxPrice.value = '';
+      fields.size.value = '';
+      fields.condition.value = 'all';
+      fields.excludeWords.value = '';
+      statusEl.textContent = 'Filters reset.';
+      sourceStatsEl.innerHTML = '';
+    }
+
+    document.getElementById('searchButton').addEventListener('click', search);
+    document.getElementById('resetButton').addEventListener('click', resetFilters);
+    fields.item.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        search();
+      }
+    });
+    fields.location.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        search();
+      }
+    });
+
+    renderEmpty('Search results will appear here.');
+  </script>
+</body>
+</html>
