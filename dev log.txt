@@ -1,0 +1,79 @@
+# Deal Finder - Dev Log
+
+---
+
+## April 3, 2026 - Session 1
+
+- Built initial Express server with Node.js
+- Created dark UI frontend with search and results cards
+- Integrated eBay Browse API (production keys)
+- Built Vinted scraper using Puppeteer
+- Built Wallapop scraper
+- Added shipping estimation by destination city
+- Added filters: platform, condition, size, price cap, excluded words
+- Fixed stale Node process bug (was blocking port 3000)
+- Fixed frontend/backend mismatch (file vs localhost)
+- Created .gitignore protecting .env and node_modules
+- Created README.md and MIT license
+- Pushed initial commit to GitHub (private)
+
+---
+
+## April 4, 2026 - Session 2 (continued)
+
+- Added Grailed scraper with Puppeteer stealth plugin
+- Added Vestiaire Collective scraper
+- Wired all 5 sources into /search route
+- Added per-source timeout guards and timeout metadata
+- Added frontend timeout badges and subtle source notices
+- Increased result depth targets across sources
+- Added size equivalence mapping (alpha, EU, denim waist hints)
+- Added luxury brand rescue logic for Grailed/Vestiaire
+- Added browser concurrency limiter and streaming `/search/stream`
+- Added short-lived non-eBay cache fallback (2 min TTL)
+- Added debug capture for failed non-eBay pulls (URL/title/anchors/ld+json counts)
+- Added source-selective execution: platform-specific searches now run only requested source(s)
+- Increased browser timeout budget for non-eBay sources
+- Improved Vinted extraction with retry query + wider selector fallback
+- Disabled cache fallback for single-platform searches (prevents misleading cacheUsed state)
+- Added focused fallback queries for platform-only Grailed/Vestiaire searches
+- Added deeper Grailed/Vestiaire extraction fallback from embedded JSON scripts (not only ld+json)
+- Added single-platform cache safeguard (`cacheUsed` no longer misleading for platform-specific searches)
+- Added network JSON capture fallback for Grailed/Vestiaire (API/GraphQL/Algolia response parsing)
+
+### Latest blocker snapshot (evening)
+
+- `platform=Grailed` and `platform=Vestiaire Collective` still return `0` in current environment.
+- `timeouts=false`, so requests complete but yield no parseable listing payload.
+- Likely root cause now: anti-bot/challenge page or changed data keys not yet matched.
+- User validation run: `Vinted` + `eBay` working; `Wallapop`, `Grailed`, and `Vestiaire` still returning zero.
+- Vestiaire platform-only retest: still `0` results with `timeouts=false`, `cacheUsed=false`, `skipped.ebay=true` (confirms extraction issue, not timeout or cache artifact).
+- Fixed runtime bug causing non-eBay scraper failures: `TARGET_RESULT_DEPTH is not defined` inside browser `page.evaluate` contexts for Wallapop/Grailed/Vestiaire. Passed max depth explicitly into all affected evaluate calls.
+
+### Current status
+
+- eBay remains stable.
+- Non-eBay sources improved, but Grailed/Vestiaire platform-only reliability still needs verification on repeated runs.
+
+### Stability target
+
+- `platform=Grailed` returns non-zero for common luxury queries in at least 2/3 runs.
+- `platform=Vestiaire Collective` returns non-zero for common luxury queries in at least 2/3 runs.
+- `cacheUsed` remains false in single-platform mode unless explicitly source-scoped caching is introduced later.
+
+---
+
+## Next session
+
+- Run 3x verification loop for Grailed and Vestiaire platform-only queries and compare results.
+- If still failing, tune selectors from fresh debug payloads captured in server logs.
+- Railway deployment (go live)
+- Make repo public with live link
+
+---
+
+## April 4, 2026 - End-of-day wrap
+
+- Runtime blocker fixed (`TARGET_RESULT_DEPTH is not defined` inside browser evaluate contexts).
+- Platform runs validated by user after patch; scraper flow is usable again.
+- Stopping point confirmed by user: "done for now".

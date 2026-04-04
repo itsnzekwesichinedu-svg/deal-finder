@@ -1,4 +1,10 @@
-const { scrapeVinted, searchEbay, scrapeWallapop } = require('./scrapers');
+const {
+  scrapeVinted,
+  searchEbay,
+  scrapeWallapop,
+  scrapeGrailed,
+  scrapeVestiaireCollective
+} = require('./scrapers');
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -6,6 +12,13 @@ require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const SOURCE_TIMEOUT_MS = 8000;
+const BROWSER_SOURCE_TIMEOUT_MS = 90000;
+const API_SOURCE_TIMEOUT_MS = 12000;
+const BROWSER_SOURCE_CONCURRENCY = 2;
+const ENABLE_EBAY = (process.env.ENABLE_EBAY || 'false').toLowerCase() === 'true';
+const NON_EBAY_CACHE_TTL_MS = 2 * 60 * 1000;
+const nonEbayCache = new Map();
 
 const STOP_WORDS = new Set([
   'for',
@@ -31,10 +44,37 @@ const QUERY_SYNONYMS = new Map([
   ['jkt', 'jacket']
 ]);
 
+const SIZE_EQUIVALENTS = {
+  xs: ['xs', 'extra small', '34', '36', 'w28'],
+  s: ['s', 'small', '36', '38', 'w30'],
+  m: ['m', 'medium', '38', '40', 'w32'],
+  l: ['l', 'large', '40', '42', 'w34'],
+  xl: ['xl', 'xlarge', 'x-large', '44', '46', 'w36', 'w38'],
+  xxl: ['xxl', '2xl', 'xx-large', '48', '50', 'w40']
+};
+
 const CATEGORY_RULES = [
   { match: ['jean', 'jeans', 'denim', '501', '555'], reject: ['short', 'shorts', 'skirt'] },
   { match: ['jacket', 'coat', 'windbreaker', 'puffer'], reject: ['short', 'shorts'] },
   { match: ['hoodie', 'sweatshirt'], reject: ['short', 'shorts'] }
+];
+
+const LUXURY_BRANDS = [
+  'prada',
+  'gucci',
+  'louis vuitton',
+  'lv',
+  'balenciaga',
+  'dior',
+  'fendi',
+  'celine',
+  'saint laurent',
+  'ysl',
+  'loewe',
+  'burberry',
+  'chanel',
+  'hermes',
+  'bottega'
 ];
 
 const COUNTRY_ALIASES = new Map([
@@ -127,6 +167,106 @@ function buildSearchProfile(item, excludeWords) {
   const excludedTokens = extractTokens(excludeWords);
 
   return { tokens, requiredTokens, excludedTokens };
+}
+
+function tokenizeSize(value = '') {
+  return normalizeText(value)
+    .split(/\s+|\/|,|-/g)
+    .filter(Boolean);
+}
+
+function buildSizeAlternatives(token, item = '') {
+  const cleanToken = token.replace(/\s+/g, '');
+  const alternatives = new Set([cleanToken]);
+  const itemText = normalizeText(item);
+  const isDenimSearch = /\b(jean|jeans|denim|levis|levi|501|505|527|550|560)\b/.test(itemText);
+
+  if (SIZE_EQUIVALENTS[cleanToken]) {
+    SIZE_EQUIVALENTS[cleanToken].forEach((entry) => alternatives.add(entry));
+  }
+
+  const waistMatch = cleanToken.match(/^w?(\d{2})$/i);
+  if (waistMatch) {
+    const waist = waistMatch[1];
+    alternatives.add(waist);
+    alternatives.add(`w${waist}`);
+    alternatives.add(`${waist}x30`);
+    alternatives.add(`${waist}x32`);
+    alternatives.add(`${waist}x34`);
+
+    if (isDenimSearch) {
+      const waistNum = Number.parseInt(waist, 10);
+      if (Number.isFinite(waistNum)) {
+        const eu = waistNum + 8;
+        alternatives.add(String(eu));
+      }
+    }
+  }
+
+  const euNumberMatch = cleanToken.match(/^\d{2}$/);
+  if (euNumberMatch) {
+    const eu = Number.parseInt(cleanToken, 10);
+    if (Number.isFinite(eu) && eu >= 42 && eu <= 56) {
+      const waist = eu - 8;
+      alternatives.add(`w${waist}`);
+      alternatives.add(String(waist));
+      alternatives.add(`${waist}x32`);
+    }
+  }
+
+  return Array.from(alternatives);
+}
+
+function matchesSizeToken(titleText, token) {
+  const direct = titleText.includes(token);
+  if (direct) {
+    return true;
+  }
+
+  const waistMatch = token.match(/^w?(\d{2})$/i);
+  if (waistMatch) {
+    const waist = waistMatch[1];
+    const waistPatterns = [
+      new RegExp(`\\bw\\s?${waist}\\b`, 'i'),
+      new RegExp(`\\b${waist}w\\b`, 'i'),
+      new RegExp(`\\bwaist\\s?${waist}\\b`, 'i'),
+      new RegExp(`\\b${waist}x\\d{2}\\b`, 'i'),
+      new RegExp(`\\b\\d{2}x${waist}\\b`, 'i'),
+      new RegExp(`\\b${waist}\\b`, 'i')
+    ];
+
+    return waistPatterns.some((pattern) => pattern.test(titleText));
+  }
+
+  const pairMatch = token.match(/^(\d{2})x(\d{2})$/i);
+  if (pairMatch) {
+    return new RegExp(`\\b${pairMatch[1]}x${pairMatch[2]}\\b`, 'i').test(titleText);
+  }
+
+  return false;
+}
+
+function matchesSizeFilter(title, sizeQuery, itemQuery = '') {
+  const sizeTokens = tokenizeSize(sizeQuery);
+
+  if (sizeTokens.length === 0) {
+    return true;
+  }
+
+  const titleText = normalizeText(title);
+  return sizeTokens.every((token) => {
+    const alternatives = buildSizeAlternatives(token, itemQuery);
+    return alternatives.some((candidate) => matchesSizeToken(titleText, candidate));
+  });
+}
+
+function detectSizeMappingUsed(sizeQuery, itemQuery = '') {
+  const sizeTokens = tokenizeSize(sizeQuery);
+  if (sizeTokens.length === 0) {
+    return false;
+  }
+
+  return sizeTokens.some((token) => buildSizeAlternatives(token, itemQuery).length > 1);
 }
 
 function matchesCategoryRule(queryTokens, titleText) {
@@ -255,8 +395,11 @@ function applyFilters(results, options) {
 
   let filtered = results
     .map((result) => enrichResult(result, destination))
-    .map((result) => scoreResult(result, profile))
-    .filter((result) => result.shouldKeep);
+    .map((result) => scoreResult(result, profile));
+
+  if (!options.relaxedMatching) {
+    filtered = filtered.filter((result) => result.shouldKeep);
+  }
 
   if (platform !== 'all') {
     filtered = filtered.filter((result) => normalizeText(result.platform) === normalizeText(platform));
@@ -267,7 +410,7 @@ function applyFilters(results, options) {
   }
 
   if (size) {
-    filtered = filtered.filter((result) => normalizeText(result.title).includes(size));
+    filtered = filtered.filter((result) => matchesSizeFilter(result.title, size, options.item));
   }
 
   if (condition && condition !== 'all') {
@@ -290,6 +433,366 @@ function applyFilters(results, options) {
   };
 }
 
+function getNonEbayCacheKey(item = '', location = '') {
+  return `${normalizeText(item)}::${normalizeText(location)}`;
+}
+
+function getCachedNonEbayResults(item = '', location = '') {
+  const key = getNonEbayCacheKey(item, location);
+  const entry = nonEbayCache.get(key);
+
+  if (!entry) {
+    return [];
+  }
+
+  if (Date.now() - entry.timestamp > NON_EBAY_CACHE_TTL_MS) {
+    nonEbayCache.delete(key);
+    return [];
+  }
+
+  return entry.results || [];
+}
+
+function setCachedNonEbayResults(item = '', location = '', results = []) {
+  const key = getNonEbayCacheKey(item, location);
+  nonEbayCache.set(key, {
+    timestamp: Date.now(),
+    results
+  });
+}
+
+function buildMetaFromSourceState(sourceState) {
+  return {
+    sources: {
+      vinted: sourceState.vintedResults.length,
+      ebay: sourceState.ebayResults.length,
+      wallapop: sourceState.wallapopResults.length,
+      grailed: sourceState.grailedResults.length,
+      vestiaireCollective: sourceState.vestiaireResults.length
+    },
+    timeouts: { ...sourceState.timeouts },
+    skipped: { ...sourceState.skipped }
+  };
+}
+
+function isSourceRequested(platformValue = 'all', sourceKey = '') {
+  const normalizedPlatform = normalizeText(platformValue || 'all');
+  if (!normalizedPlatform || normalizedPlatform === 'all') {
+    return true;
+  }
+
+  const aliases = {
+    vinted: ['vinted'],
+    ebay: ['ebay', 'e bay'],
+    wallapop: ['wallapop'],
+    grailed: ['grailed'],
+    vestiaireCollective: ['vestiaire collective', 'vestiairecollective', 'vestiaire']
+  };
+
+  return (aliases[sourceKey] || []).some((alias) => alias === normalizedPlatform);
+}
+
+function createEmptySource(skipped = false) {
+  return { results: [], timedOut: false, skipped };
+}
+
+function buildSearchResponse(options, sourceState, config = {}) {
+  const { allowFallback = true, allowCache = true } = config;
+  const sizeMappingUsed = detectSizeMappingUsed(options.size, options.item);
+  const singlePlatformMode = normalizeText(options.platform || 'all') !== 'all';
+
+  const liveNonEbayResults = [
+    ...sourceState.vintedResults,
+    ...sourceState.wallapopResults,
+    ...sourceState.grailedResults,
+    ...sourceState.vestiaireResults
+  ];
+
+  let cacheUsed = false;
+  let nonEbayResults = liveNonEbayResults;
+
+  if (allowCache && !singlePlatformMode) {
+    if (nonEbayResults.length > 0) {
+      setCachedNonEbayResults(options.item, options.location, nonEbayResults);
+    } else {
+      const cached = getCachedNonEbayResults(options.item, options.location);
+      if (cached.length > 0) {
+        nonEbayResults = cached;
+        cacheUsed = true;
+      }
+    }
+  }
+
+  const liveResults = [...nonEbayResults, ...sourceState.ebayResults];
+
+  let filtered = applyFilters(liveResults, options);
+  const hasTimeouts = Object.values(sourceState.timeouts || {}).some(Boolean);
+  let relaxedFallbackUsed = false;
+
+  if (allowFallback && filtered.results.length === 0 && hasTimeouts && liveResults.length > 0) {
+    relaxedFallbackUsed = true;
+    filtered = applyFilters(liveResults, {
+      ...options,
+      relaxedMatching: true
+    });
+  }
+
+  if (allowFallback && filtered.results.length === 0 && options.size && liveResults.length > 0) {
+    relaxedFallbackUsed = true;
+    filtered = applyFilters(liveResults, {
+      ...options,
+      size: '',
+      relaxedMatching: true
+    });
+  }
+
+  return {
+    results: filtered.results,
+    meta: {
+      item: options.item,
+      totalFound: filtered.results.length,
+      destination: filtered.destination,
+      sources: {
+        vinted: sourceState.vintedResults.length,
+        ebay: sourceState.ebayResults.length,
+        wallapop: sourceState.wallapopResults.length,
+        grailed: sourceState.grailedResults.length,
+        vestiaireCollective: sourceState.vestiaireResults.length
+      },
+      timeouts: sourceState.timeouts,
+      relaxedFallbackUsed,
+      sizeMappingUsed,
+      luxuryRescueUsed: Boolean(sourceState.luxuryRescueUsed),
+      cacheUsed,
+      skipped: sourceState.skipped
+    }
+  };
+}
+
+function isLuxuryQuery(item = '') {
+  const normalized = normalizeText(item);
+  return LUXURY_BRANDS.some((brand) => normalized.includes(normalizeText(brand)));
+}
+
+function buildVestiaireRetryQuery(item = '') {
+  const normalized = normalizeText(item);
+  const luxury = LUXURY_BRANDS.find((brand) => normalized.includes(normalizeText(brand)));
+
+  if (!luxury) {
+    return item;
+  }
+
+  const categoryToken =
+    extractTokens(item).find((token) =>
+      ['jacket', 'coat', 'bag', 'shirt', 'jeans', 'pants', 'shoes', 'sneakers'].includes(token)
+    ) || 'jacket';
+
+  return `${luxury} ${categoryToken}`.trim();
+}
+
+function buildGeneralRetryQuery(item = '') {
+  const tokens = extractTokens(item).slice(0, 2);
+  if (!tokens.length) {
+    return item;
+  }
+  return tokens.join(' ');
+}
+
+function buildGrailedRetryQuery(item = '') {
+  const normalized = normalizeText(item);
+  const luxury = LUXURY_BRANDS.find((brand) => normalized.includes(normalizeText(brand)));
+  if (!luxury) {
+    return item;
+  }
+
+  const categoryToken =
+    extractTokens(item).find((token) =>
+      ['jacket', 'coat', 'hoodie', 'bag', 'shirt', 'pants', 'jeans', 'sneakers'].includes(token)
+    ) || 'jacket';
+
+  return `${luxury} ${categoryToken}`.trim();
+}
+
+async function searchVestiaireWithLuxuryRetry(item, location) {
+  const first = await scrapeVestiaireCollective(item, location);
+
+  if (!isLuxuryQuery(item) || first.length > 0) {
+    return first;
+  }
+
+  const retryQuery = buildVestiaireRetryQuery(item);
+  if (normalizeText(retryQuery) === normalizeText(item)) {
+    return first;
+  }
+
+  const retry = await scrapeVestiaireCollective(retryQuery, location);
+  if (!retry.length) {
+    return first;
+  }
+
+  const seen = new Set(first.map((result) => result.url));
+  const merged = [...first];
+
+  retry.forEach((result) => {
+    if (!seen.has(result.url)) {
+      seen.add(result.url);
+      merged.push(result);
+    }
+  });
+
+  return merged;
+}
+
+async function mergeUniqueByUrl(...groups) {
+  const merged = [];
+  const seen = new Set();
+
+  groups.flat().forEach((result) => {
+    if (!result || !result.url || seen.has(result.url)) {
+      return;
+    }
+
+    seen.add(result.url);
+    merged.push(result);
+  });
+
+  return merged;
+}
+
+async function scrapeWithQueryFallback(sourceName, scraperFn, item, location) {
+  const first = await scraperFn(item, location);
+  if (first.length > 0) {
+    return first;
+  }
+
+  const retryQuery = buildGeneralRetryQuery(item);
+  if (!retryQuery || normalizeText(retryQuery) === normalizeText(item)) {
+    return first;
+  }
+
+  const retry = await scraperFn(retryQuery, location);
+  if (!retry.length) {
+    return first;
+  }
+
+  console.warn(`${sourceName} fallback query used: "${retryQuery}"`);
+  return mergeUniqueByUrl(first, retry);
+}
+
+function buildFocusedRetryQueries(item = '') {
+  const queries = [];
+  const normalized = normalizeText(item);
+  const luxury = LUXURY_BRANDS.find((brand) => normalized.includes(normalizeText(brand))) || '';
+  const compact = buildGeneralRetryQuery(item);
+  const category =
+    extractTokens(item).find((token) =>
+      ['jacket', 'coat', 'bag', 'hoodie', 'shirt', 'pants', 'jeans', 'shoes', 'sneakers'].includes(token)
+    ) || 'jacket';
+
+  queries.push(item);
+  if (compact) {
+    queries.push(compact);
+  }
+  if (luxury) {
+    queries.push(luxury);
+    queries.push(`${luxury} ${category}`);
+    queries.push(`${luxury} vintage ${category}`);
+  }
+
+  const unique = [];
+  const seen = new Set();
+  queries.forEach((query) => {
+    const key = normalizeText(query);
+    if (!key || seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    unique.push(query);
+  });
+
+  return unique.slice(0, 5);
+}
+
+async function scrapeWithFocusedFallbacks(sourceName, scraperFn, item, location) {
+  const queries = buildFocusedRetryQueries(item);
+  let merged = [];
+
+  for (const query of queries) {
+    const results = await scraperFn(query, location);
+    merged = await mergeUniqueByUrl(merged, results);
+
+    if (results.length > 0 && normalizeText(query) !== normalizeText(item)) {
+      console.warn(`${sourceName} focused fallback query used: "${query}"`);
+    }
+
+    if (merged.length >= 8) {
+      break;
+    }
+  }
+
+  return merged;
+}
+
+async function withSourceTimeout(sourceName, task, timeoutMs = SOURCE_TIMEOUT_MS) {
+  let timer;
+
+  try {
+    const result = await Promise.race([
+      task,
+      new Promise((resolve) => {
+        timer = setTimeout(() => {
+          console.warn(`${sourceName} timed out after ${timeoutMs}ms. Skipping source.`);
+          resolve({ results: [], timedOut: true });
+        }, timeoutMs);
+      })
+    ]);
+
+    if (timer) {
+      clearTimeout(timer);
+    }
+
+    if (Array.isArray(result)) {
+      return { results: result, timedOut: false };
+    }
+
+    if (result && Array.isArray(result.results)) {
+      return result;
+    }
+
+    return { results: [], timedOut: false };
+  } catch (error) {
+    if (timer) {
+      clearTimeout(timer);
+    }
+
+    console.error(`${sourceName} failed:`, error.message);
+    return { results: [], timedOut: false };
+  }
+}
+
+async function runLimited(taskFactories, limit = 2) {
+  const results = new Array(taskFactories.length);
+  let cursor = 0;
+
+  async function worker() {
+    while (true) {
+      const index = cursor;
+      cursor += 1;
+
+      if (index >= taskFactories.length) {
+        return;
+      }
+
+      results[index] = await taskFactories[index]();
+    }
+  }
+
+  const workerCount = Math.max(1, Math.min(limit, taskFactories.length));
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+  return results;
+}
+
 app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
@@ -310,40 +813,395 @@ app.get('/search', async (req, res) => {
   }
 
   try {
-    const [vintedResults, ebayResults, wallapopResults] = await Promise.all([
-      scrapeVinted(item, location),
-      searchEbay(item, location),
-      scrapeWallapop(item, location)
-    ]);
+    const singlePlatformMode = normalizeText(platform || 'all') !== 'all';
+    const runVinted = isSourceRequested(platform, 'vinted');
+    const runEbay = isSourceRequested(platform, 'ebay') && ENABLE_EBAY;
+    const runWallapop = isSourceRequested(platform, 'wallapop');
+    const runGrailed = isSourceRequested(platform, 'grailed');
+    const runVestiaire = isSourceRequested(platform, 'vestiaireCollective');
 
-    const liveResults = [...vintedResults, ...ebayResults, ...wallapopResults];
-    const filtered = applyFilters(liveResults, {
-      item,
-      location,
-      platform,
-      maxPrice,
-      size,
-      condition,
-      excludeWords,
-      sort
+    const browserTaskFactories = [];
+    if (runVinted) {
+      browserTaskFactories.push(async () => ({
+        key: 'vinted',
+        result: await withSourceTimeout(
+          'Vinted',
+          scrapeWithQueryFallback('Vinted', scrapeVinted, item, location),
+          BROWSER_SOURCE_TIMEOUT_MS
+        )
+      }));
+    }
+    if (runWallapop) {
+      browserTaskFactories.push(async () => ({
+        key: 'wallapop',
+        result: await withSourceTimeout(
+          'Wallapop',
+          scrapeWithQueryFallback('Wallapop', scrapeWallapop, item, location),
+          BROWSER_SOURCE_TIMEOUT_MS
+        )
+      }));
+    }
+    if (runGrailed) {
+      browserTaskFactories.push(async () => ({
+        key: 'grailed',
+        result: await withSourceTimeout(
+          'Grailed',
+          singlePlatformMode
+            ? scrapeWithFocusedFallbacks('Grailed', scrapeGrailed, item, location)
+            : scrapeWithQueryFallback('Grailed', scrapeGrailed, item, location),
+          BROWSER_SOURCE_TIMEOUT_MS
+        )
+      }));
+    }
+    if (runVestiaire) {
+      browserTaskFactories.push(async () => ({
+        key: 'vestiaireCollective',
+        result: await withSourceTimeout(
+          'Vestiaire Collective',
+          singlePlatformMode
+            ? scrapeWithFocusedFallbacks(
+                'Vestiaire Collective',
+                searchVestiaireWithLuxuryRetry,
+                item,
+                location
+              )
+            : scrapeWithQueryFallback(
+                'Vestiaire Collective',
+                searchVestiaireWithLuxuryRetry,
+                item,
+                location
+              ),
+          BROWSER_SOURCE_TIMEOUT_MS
+        )
+      }));
+    }
+
+    const browserTaskResults = browserTaskFactories.length
+      ? await runLimited(browserTaskFactories, BROWSER_SOURCE_CONCURRENCY)
+      : [];
+
+    const sourceLookup = {
+      vinted: createEmptySource(!runVinted),
+      ebay: createEmptySource(!runEbay),
+      wallapop: createEmptySource(!runWallapop),
+      grailed: createEmptySource(!runGrailed),
+      vestiaireCollective: createEmptySource(!runVestiaire)
+    };
+
+    browserTaskResults.forEach((entry) => {
+      sourceLookup[entry.key] = entry.result;
     });
 
-    res.json({
-      results: filtered.results,
-      meta: {
-        item,
-        totalFound: filtered.results.length,
-        destination: filtered.destination,
-        sources: {
-          vinted: vintedResults.length,
-          ebay: ebayResults.length,
-          wallapop: wallapopResults.length
-        }
-      }
-    });
+    if (runEbay) {
+      sourceLookup.ebay = await withSourceTimeout('eBay', searchEbay(item, location), API_SOURCE_TIMEOUT_MS);
+    }
+
+    let sourceState = {
+      vintedResults: sourceLookup.vinted.results,
+      ebayResults: sourceLookup.ebay.results,
+      wallapopResults: sourceLookup.wallapop.results,
+      grailedResults: sourceLookup.grailed.results,
+      vestiaireResults: sourceLookup.vestiaireCollective.results,
+      timeouts: {
+      vinted: sourceLookup.vinted.timedOut,
+      ebay: sourceLookup.ebay.timedOut,
+      wallapop: sourceLookup.wallapop.timedOut,
+      grailed: sourceLookup.grailed.timedOut,
+      vestiaireCollective: sourceLookup.vestiaireCollective.timedOut
+      },
+      skipped: {
+        ebay: Boolean(sourceLookup.ebay.skipped)
+      },
+      luxuryRescueUsed: false
+    };
+
+    const nonEbayCount =
+      sourceState.vintedResults.length +
+      sourceState.wallapopResults.length +
+      sourceState.grailedResults.length +
+      sourceState.vestiaireResults.length;
+
+    if (runGrailed && runVestiaire && isLuxuryQuery(item) && nonEbayCount === 0) {
+      sourceState.luxuryRescueUsed = true;
+
+      const [grailedRescue, vestiaireRescue] = await Promise.all([
+        withSourceTimeout(
+          'Grailed Rescue',
+          scrapeGrailed(buildGrailedRetryQuery(item), location),
+          28000
+        ),
+        withSourceTimeout(
+          'Vestiaire Rescue',
+          scrapeVestiaireCollective(buildVestiaireRetryQuery(item), location),
+          28000
+        )
+      ]);
+
+      sourceState.grailedResults = await mergeUniqueByUrl(
+        sourceState.grailedResults,
+        grailedRescue.results
+      );
+      sourceState.vestiaireResults = await mergeUniqueByUrl(
+        sourceState.vestiaireResults,
+        vestiaireRescue.results
+      );
+
+      sourceState.timeouts.grailed = Boolean(
+        sourceState.timeouts.grailed && sourceState.grailedResults.length === 0
+      );
+      sourceState.timeouts.vestiaireCollective = Boolean(
+        sourceState.timeouts.vestiaireCollective && sourceState.vestiaireResults.length === 0
+      );
+    }
+
+    const response = buildSearchResponse(
+      { item, location, platform, maxPrice, size, condition, excludeWords, sort },
+      sourceState,
+      { allowFallback: true, allowCache: true }
+    );
+
+    res.json(response);
   } catch (err) {
     console.error('Search error:', err.message);
     res.status(500).json({ results: [], error: 'Search failed.' });
+  }
+});
+
+app.get('/search/stream', async (req, res) => {
+  const { item, location, platform, maxPrice, size, condition, excludeWords, sort } = req.query;
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  let closed = false;
+  req.on('close', () => {
+    closed = true;
+  });
+
+  const sendEvent = (event, payload) => {
+    if (closed) {
+      return;
+    }
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  };
+
+  if (!item) {
+    sendEvent('done', { results: [], meta: { item: '', totalFound: 0 } });
+    return res.end();
+  }
+
+  const options = { item, location, platform, maxPrice, size, condition, excludeWords, sort };
+  const singlePlatformMode = normalizeText(platform || 'all') !== 'all';
+  const sourceState = {
+    vintedResults: [],
+    ebayResults: [],
+    wallapopResults: [],
+    grailedResults: [],
+    vestiaireResults: [],
+    timeouts: {
+      vinted: false,
+      ebay: false,
+      wallapop: false,
+      grailed: false,
+      vestiaireCollective: false
+    },
+    skipped: {
+      ebay: false
+    },
+    luxuryRescueUsed: false
+  };
+
+  sendEvent('start', {
+    message: 'Streaming results from marketplaces...'
+  });
+
+  const runVinted = isSourceRequested(platform, 'vinted');
+  const runEbay = isSourceRequested(platform, 'ebay') && ENABLE_EBAY;
+  const runWallapop = isSourceRequested(platform, 'wallapop');
+  const runGrailed = isSourceRequested(platform, 'grailed');
+  const runVestiaire = isSourceRequested(platform, 'vestiaireCollective');
+
+  sourceState.skipped.ebay = !runEbay;
+
+  const pushSourceUpdate = (key, label, sourceResult) => {
+    const targetMap = {
+      vinted: 'vintedResults',
+      ebay: 'ebayResults',
+      wallapop: 'wallapopResults',
+      grailed: 'grailedResults',
+      vestiaireCollective: 'vestiaireResults'
+    };
+    const targetKey = targetMap[key];
+    if (!targetKey) {
+      return;
+    }
+    sourceState[targetKey] = sourceResult.results || [];
+    sourceState.timeouts[key] = Boolean(sourceResult.timedOut);
+    if (key === 'ebay') {
+      sourceState.skipped.ebay = Boolean(sourceResult.skipped);
+    }
+
+    const partialResponse = buildSearchResponse(options, sourceState, {
+      allowFallback: false,
+      allowCache: false
+    });
+
+    sendEvent('source_results', {
+      source: key,
+      label,
+      added: sourceState[targetKey].length,
+      ...partialResponse
+    });
+
+    if (sourceResult.timedOut) {
+      sendEvent('source_timeout', { source: key, label });
+    }
+  };
+
+  try {
+    let ebayPromise = Promise.resolve(createEmptySource(true));
+    if (runEbay) {
+      ebayPromise = withSourceTimeout('eBay', searchEbay(item, location), API_SOURCE_TIMEOUT_MS);
+      ebayPromise.then((ebaySource) => {
+        pushSourceUpdate('ebay', 'eBay', ebaySource);
+      });
+    }
+
+    const browserTasks = [
+      ...(runVinted
+        ? [
+            async () => {
+              const result = await withSourceTimeout(
+                'Vinted',
+                scrapeWithQueryFallback('Vinted', scrapeVinted, item, location),
+                BROWSER_SOURCE_TIMEOUT_MS
+              );
+              pushSourceUpdate('vinted', 'Vinted', result);
+            }
+          ]
+        : []),
+      ...(runWallapop
+        ? [
+            async () => {
+              const result = await withSourceTimeout(
+                'Wallapop',
+                scrapeWithQueryFallback('Wallapop', scrapeWallapop, item, location),
+                BROWSER_SOURCE_TIMEOUT_MS
+              );
+              pushSourceUpdate('wallapop', 'Wallapop', result);
+            }
+          ]
+        : []),
+      ...(runGrailed
+        ? [
+            async () => {
+              const result = await withSourceTimeout(
+                'Grailed',
+                singlePlatformMode
+                  ? scrapeWithFocusedFallbacks('Grailed', scrapeGrailed, item, location)
+                  : scrapeWithQueryFallback('Grailed', scrapeGrailed, item, location),
+                BROWSER_SOURCE_TIMEOUT_MS
+              );
+              pushSourceUpdate('grailed', 'Grailed', result);
+            }
+          ]
+        : []),
+      ...(runVestiaire
+        ? [
+            async () => {
+              const result = await withSourceTimeout(
+                'Vestiaire Collective',
+                singlePlatformMode
+                  ? scrapeWithFocusedFallbacks(
+                      'Vestiaire Collective',
+                      searchVestiaireWithLuxuryRetry,
+                      item,
+                      location
+                    )
+                  : scrapeWithQueryFallback(
+                      'Vestiaire Collective',
+                      searchVestiaireWithLuxuryRetry,
+                      item,
+                      location
+                    ),
+                BROWSER_SOURCE_TIMEOUT_MS
+              );
+              pushSourceUpdate('vestiaireCollective', 'Vestiaire Collective', result);
+            }
+          ]
+        : [])
+    ];
+
+    if (browserTasks.length) {
+      await runLimited(browserTasks, BROWSER_SOURCE_CONCURRENCY);
+    }
+    const ebaySource = await ebayPromise;
+    sourceState.ebayResults = ebaySource.results || [];
+    sourceState.timeouts.ebay = Boolean(ebaySource.timedOut);
+    sourceState.skipped.ebay = Boolean(ebaySource.skipped);
+
+    const nonEbayCount =
+      sourceState.vintedResults.length +
+      sourceState.wallapopResults.length +
+      sourceState.grailedResults.length +
+      sourceState.vestiaireResults.length;
+
+    if (runGrailed && runVestiaire && isLuxuryQuery(item) && nonEbayCount === 0) {
+      sourceState.luxuryRescueUsed = true;
+      const [grailedRescue, vestiaireRescue] = await Promise.all([
+        withSourceTimeout(
+          'Grailed Rescue',
+          scrapeGrailed(buildGrailedRetryQuery(item), location),
+          28000
+        ),
+        withSourceTimeout(
+          'Vestiaire Rescue',
+          scrapeVestiaireCollective(buildVestiaireRetryQuery(item), location),
+          28000
+        )
+      ]);
+
+      sourceState.grailedResults = await mergeUniqueByUrl(
+        sourceState.grailedResults,
+        grailedRescue.results
+      );
+      sourceState.vestiaireResults = await mergeUniqueByUrl(
+        sourceState.vestiaireResults,
+        vestiaireRescue.results
+      );
+
+      sourceState.timeouts.grailed = Boolean(
+        sourceState.timeouts.grailed && sourceState.grailedResults.length === 0
+      );
+      sourceState.timeouts.vestiaireCollective = Boolean(
+        sourceState.timeouts.vestiaireCollective && sourceState.vestiaireResults.length === 0
+      );
+
+      const rescueSnapshot = buildSearchResponse(options, sourceState, {
+        allowFallback: false,
+        allowCache: false
+      });
+      sendEvent('source_results', {
+        source: 'luxury_rescue',
+        label: 'Luxury Rescue',
+        added: sourceState.grailedResults.length + sourceState.vestiaireResults.length,
+        ...rescueSnapshot
+      });
+    }
+
+    const finalResponse = buildSearchResponse(options, sourceState, {
+      allowFallback: true,
+      allowCache: true
+    });
+
+    sendEvent('done', finalResponse);
+    return res.end();
+  } catch (error) {
+    sendEvent('error', { message: error.message || 'Streaming search failed.' });
+    return res.end();
   }
 });
 

@@ -1,0 +1,23 @@
+to Run the code into powershell
+
+cd C:\Users\itsth\Desktop\deal-finder
+npm.cmd start
+
+then on google 
+http://localhost:3000/
+
+If port 3000 is ever stuck, run this first:
+
+taskkill /IM node.exe /F
+
+If it’s running in the terminal, press Ctrl+C.
+
+If that doesn’t stop it, use:
+
+taskkill /IM node.exe /F
+That will kill the running Node server.
+
+$result = Invoke-RestMethod -Uri 'http://localhost:3000/search?item=nike%20jacket&location=Madrid'
+$result.meta.sources | Format-List
+$result.results | Select-Object -First 10 platform,title,price,url | Format-Table -AutoSize
+
