@@ -5,6 +5,7 @@ const {
   scrapeGrailed,
   scrapeVestiaireCollective
 } = require('./scrapers');
+const axios = require('axios');
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -19,6 +20,8 @@ const BROWSER_SOURCE_CONCURRENCY = 2;
 const ENABLE_EBAY = (process.env.ENABLE_EBAY || 'false').toLowerCase() === 'true';
 const NON_EBAY_CACHE_TTL_MS = 2 * 60 * 1000;
 const nonEbayCache = new Map();
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
+const OPENAI_VISION_MODEL = process.env.OPENAI_VISION_MODEL || 'gpt-4.1-mini';
 
 const STOP_WORDS = new Set([
   'for',
@@ -793,16 +796,325 @@ async function runLimited(taskFactories, limit = 2) {
   return results;
 }
 
+function extractTextFromResponsesPayload(payload) {
+  if (!payload || typeof payload !== 'object') {
+    return '';
+  }
+
+  if (typeof payload.output_text === 'string' && payload.output_text.trim()) {
+    return payload.output_text.trim();
+  }
+
+  const chunks = [];
+  const walk = (node) => {
+    if (!node) {
+      return;
+    }
+
+    if (typeof node === 'string') {
+      chunks.push(node);
+      return;
+    }
+
+    if (Array.isArray(node)) {
+      node.forEach(walk);
+      return;
+    }
+
+    if (typeof node !== 'object') {
+      return;
+    }
+
+    if (typeof node.text === 'string') {
+      chunks.push(node.text);
+    }
+
+    Object.values(node).forEach(walk);
+  };
+
+  walk(payload.output);
+  return chunks.join(' ').trim();
+}
+
+function parseImageQueryJson(rawText = '') {
+  if (!rawText) {
+    return null;
+  }
+
+  const firstBrace = rawText.indexOf('{');
+  const lastBrace = rawText.lastIndexOf('}');
+  if (firstBrace < 0 || lastBrace <= firstBrace) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(rawText.slice(firstBrace, lastBrace + 1));
+  } catch (error) {
+    return null;
+  }
+}
+
+function cleanImageQuery(value = '') {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .split(' ')
+    .slice(0, 8)
+    .join(' ');
+}
+
+function hasUsableOpenAiKey() {
+  const key = String(OPENAI_API_KEY || '').trim();
+  if (!key) {
+    return false;
+  }
+  if (key === 'your_key_here') {
+    return false;
+  }
+  return key.startsWith('sk-');
+}
+
+function extractUsefulSeedFromFileName(fileName = '') {
+  const cleaned = cleanImageQuery((fileName || '').replace(/\.[a-z0-9]+$/i, ''));
+  if (!cleaned) {
+    return '';
+  }
+
+  const tokens = cleaned.split(' ').filter(Boolean);
+  if (!tokens.length) {
+    return '';
+  }
+
+  const hasFashionToken = tokens.some((token) =>
+    /^(jean|jeans|denim|jacket|coat|hoodie|shirt|pants|trouser|trousers|sneaker|sneakers|shoe|shoes|boot|boots|bag|prada|gucci|levis|levi|nike|adidas|ralph|carhartt)$/i.test(token)
+  );
+  if (!hasFashionToken) {
+    return '';
+  }
+
+  const randomSingleToken = tokens.length === 1 && /^[a-z0-9]{8,}$/i.test(tokens[0]) && !/[aeiou]/i.test(tokens[0]);
+  if (randomSingleToken) {
+    return '';
+  }
+
+  return cleaned;
+}
+
+function buildImageQueryVariants(primaryQuery = '', tags = [], itemHint = '') {
+  const variants = [];
+  const push = (value) => {
+    const cleaned = cleanImageQuery(value || '');
+    if (!cleaned) {
+      return;
+    }
+    if (!variants.includes(cleaned)) {
+      variants.push(cleaned);
+    }
+  };
+
+  push(primaryQuery);
+  push(itemHint);
+
+  if (Array.isArray(tags) && tags.length) {
+    push(tags.slice(0, 3).join(' '));
+    tags.slice(0, 4).forEach((tag) => push(tag));
+  }
+
+  const primary = cleanImageQuery(primaryQuery);
+  const hasJeans = /\b(jean|jeans|denim)\b/.test(primary);
+  if (hasJeans) {
+    push(`${primary} straight`);
+    push(`${primary} vintage`);
+    push(primary.replace(/\bjeans?\b/g, 'denim jeans'));
+  }
+
+  return variants.slice(0, 5);
+}
+
+function buildHeuristicImageFallback(itemHint = '', fileName = '') {
+  const hint = cleanImageQuery(itemHint || '');
+  const fileTokens = extractUsefulSeedFromFileName(fileName || '');
+
+  const seed = hint || fileTokens;
+  if (seed) {
+    const tags = [];
+    if (/\b(jean|denim|501|505|527|550|560)\b/.test(seed)) {
+      tags.push('denim', 'jeans', 'straight');
+    } else if (/\b(jacket|coat|puffer|windbreaker)\b/.test(seed)) {
+      tags.push('jacket', 'outerwear');
+    } else if (/\b(shoe|sneaker|boot)\b/.test(seed)) {
+      tags.push('sneakers', 'shoes');
+    }
+
+    const queries = buildImageQueryVariants(seed, tags, seed);
+    return {
+      query: queries[0] || seed,
+      queries,
+      tags,
+      confidence: 0.35,
+      model: 'heuristic-fallback',
+      usedVision: false,
+      fallbackUsed: true,
+      warning: 'Vision API unavailable. Using local query expansion.'
+    };
+  }
+
+  const defaults = ['blue denim jeans', 'straight leg jeans', 'vintage denim pants'];
+  return {
+    query: defaults[0],
+    queries: defaults,
+    tags: ['denim', 'jeans'],
+    confidence: 0.2,
+    model: 'heuristic-fallback',
+    usedVision: false,
+    fallbackUsed: true,
+    warning: 'Vision API unavailable. Using generic image fallback queries.'
+  };
+}
+
+async function inferFashionQueryFromImage(imageDataUrl = '', itemHint = '') {
+  if (!hasUsableOpenAiKey()) {
+    return { query: '', queries: [], tags: [], confidence: 0, model: '', usedVision: false };
+  }
+
+  const requestBody = {
+    model: OPENAI_VISION_MODEL,
+    max_output_tokens: 180,
+    input: [
+      {
+        role: 'system',
+        content: [
+          {
+            type: 'input_text',
+            text:
+              'You are a fashion reverse-image search query builder. Output strict JSON with keys: query (string), tags (string[]), confidence (0..1). Make query 3-9 words, generic if brand is not visually certain, and optimized for resale marketplaces.'
+          }
+        ]
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text: `User hint: ${itemHint || 'none'}`
+          },
+          {
+            type: 'input_image',
+            image_url: imageDataUrl,
+            detail: 'high'
+          }
+        ]
+      }
+    ]
+  };
+
+  const response = await axios.post('https://api.openai.com/v1/responses', requestBody, {
+    headers: {
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    timeout: 20000
+  });
+
+  const rawText = extractTextFromResponsesPayload(response.data);
+  const parsed = parseImageQueryJson(rawText);
+  const rawQuery = parsed?.query || '';
+  const query = cleanImageQuery(rawQuery || rawText);
+  const tags = Array.isArray(parsed?.tags)
+    ? parsed.tags.map((tag) => cleanImageQuery(String(tag))).filter(Boolean).slice(0, 8)
+    : [];
+  const queries = buildImageQueryVariants(query, tags, itemHint);
+  const confidenceRaw = Number.parseFloat(parsed?.confidence);
+  const confidence = Number.isFinite(confidenceRaw)
+    ? Math.max(0, Math.min(1, confidenceRaw))
+    : 0;
+
+  return {
+    query: queries[0] || query,
+    queries,
+    tags,
+    confidence,
+    model: OPENAI_VISION_MODEL,
+    usedVision: Boolean(queries[0] || query)
+  };
+}
+
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '8mb' }));
 app.use(express.static(__dirname));
 
 app.get('/health', (req, res) => {
   res.json({ ok: true, port: PORT });
 });
 
+app.get('/debug/env', (req, res) => {
+  const rawKey = String(process.env.OPENAI_API_KEY || '').trim();
+  const looksLikeKey = rawKey.startsWith('sk-') && rawKey !== 'your_key_here';
+  const openaiStatus = looksLikeKey ? 'configured' : 'missing_or_invalid';
+
+  res.json({
+    ok: true,
+    openaiConfigured: looksLikeKey,
+    openaiStatus,
+    openaiHint: looksLikeKey
+      ? 'OpenAI vision is enabled.'
+      : 'Set OPENAI_API_KEY=sk-... in .env to enable full image analysis.',
+    openaiModel: process.env.OPENAI_VISION_MODEL || 'gpt-4.1-mini',
+    ebayConfigured: Boolean(
+      String(process.env.EBAY_CLIENT_ID || '').trim() &&
+      String(process.env.EBAY_CLIENT_SECRET || '').trim()
+    )
+  });
+});
+
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
+});
+
+app.post('/image/query', async (req, res) => {
+  const { imageDataUrl, itemHint, fileName } = req.body || {};
+
+  if (!imageDataUrl || typeof imageDataUrl !== 'string') {
+    return res.status(400).json({
+      ok: false,
+      error: 'Missing imageDataUrl.'
+    });
+  }
+
+  if (!hasUsableOpenAiKey()) {
+    return res.json({
+      ok: true,
+      ...buildHeuristicImageFallback(itemHint || '', fileName || ''),
+      warning: 'OpenAI key missing or invalid. Using local fallback query expansion.'
+    });
+  }
+
+  try {
+    const inference = await inferFashionQueryFromImage(imageDataUrl, itemHint || '');
+
+    return res.json({
+      ok: true,
+      query: inference.query,
+      queries: inference.queries,
+      tags: inference.tags,
+      confidence: inference.confidence,
+      model: inference.model,
+      usedVision: inference.usedVision
+    });
+  } catch (error) {
+    const status = error?.response?.status;
+    const reason = status === 401
+      ? 'OpenAI key rejected (401). Using fallback image queries.'
+      : 'Vision API request failed. Using fallback image queries.';
+    console.error('Image query inference failed:', error.message);
+    return res.json({
+      ok: true,
+      ...buildHeuristicImageFallback(itemHint || '', fileName || ''),
+      warning: reason
+    });
+  }
 });
 
 app.get('/search', async (req, res) => {

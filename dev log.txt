@@ -77,3 +77,69 @@
 - Runtime blocker fixed (`TARGET_RESULT_DEPTH is not defined` inside browser evaluate contexts).
 - Platform runs validated by user after patch; scraper flow is usable again.
 - Stopping point confirmed by user: "done for now".
+
+---
+
+## April 22, 2026 - Image Reverse Search (new)
+
+- Added backend endpoint: `POST /image/query`
+- Added vision inference helper in `server.js` using OpenAI Responses API
+- Added `OPENAI_VISION_MODEL` support (default: `gpt-4.1-mini`)
+- Increased JSON body limit to `8mb` for image payloads
+- Added frontend image upload input (`Reference Image`) in `index.html`
+- Added client-side image compression before upload (faster + more stable)
+- Search flow now optionally analyzes image first, then auto-builds/augments the text query and runs normal marketplace search
+- Added subtle frontend notice showing the inferred image query
+
+### Required for this feature
+
+- `.env` must include `OPENAI_API_KEY`
+- Optional: set `OPENAI_VISION_MODEL`
+
+### Known limits
+
+- If OpenAI key is missing/unavailable, image query endpoint returns a clean error and text search still works.
+
+### April 22 follow-up - "More like Google Lens"
+
+- Improved vision prompt for resale-focused query generation.
+- Added robust fallback parsing when model does not return clean JSON.
+- Added `queries` array output from `/image/query` (not just one query).
+- Added image query variants builder in backend (primary + tag-based + denim-friendly alternates).
+- Frontend now runs an **image burst search** (up to 3 query angles) and merges/dedupes results by URL.
+- Added UI notice showing both primary image query and alternative query angles.
+- Improved image error messages to surface server reason (for example missing `OPENAI_API_KEY`) instead of generic failure.
+
+### April 22 hotfix - image mode failing hard
+
+- Root cause identified: `.env` only had eBay keys; `OPENAI_API_KEY` missing, causing `/image/query` to fail.
+- Changed `/image/query` to never hard-fail when vision is unavailable.
+- Added local heuristic fallback query generator (`itemHint` + filename + category defaults).
+- Frontend now continues searching even if image analysis fails, instead of aborting run.
+- Added subtle warning notice when heuristic fallback is used.
+
+### April 22 hotfix 2 - invalid key + filename pollution
+
+- Added OpenAI key validation guard (`sk-...` required, placeholder blocked).
+- Added explicit warning when key is invalid/rejected (401).
+- Prevented random filenames (e.g. `51XquqDhOgL.jpg`) from being used as search seeds.
+- Filename now only contributes if it contains fashion keywords.
+
+### April 22 hotfix 3 - safe env debug endpoint
+
+- Added `GET /debug/env` for quick config checks without exposing secrets.
+- Response includes `openaiConfigured`, `openaiModel`, and `ebayConfigured`.
+
+### April 22 UI + data polish - result thumbnails
+
+- Added thumbnail/image extraction to all sources where available (Vinted, eBay, Wallapop, Grailed, Vestiaire + JSON fallbacks).
+- Extended normalized result shape with `imageUrl`.
+- Redesigned result cards to image-first style with clean `4:5` crop and lazy-loaded images.
+- Added safe URL/HTML handling in frontend render path.
+- Kept existing filters, sorting, and progressive loading behavior intact.
+
+### April 22 UX polish - fallback clarity
+
+- Added `openaiStatus` and `openaiHint` to `/debug/env`.
+- Added frontend fallback-mode notice when OpenAI key is missing/invalid.
+- Added polished `No Image Preview` placeholder for listings without thumbnails or broken image URLs.

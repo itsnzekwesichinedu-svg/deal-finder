@@ -38,6 +38,27 @@ function parsePrice(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function pickImageUrl(result = {}) {
+  const candidates = [
+    result.imageUrl,
+    result.image,
+    result.thumbnail,
+    result.thumbnailUrl,
+    result.picture,
+    result.photo
+  ].filter((value) => typeof value === 'string' && value.trim());
+
+  if (!candidates.length) {
+    return '';
+  }
+
+  const first = candidates[0].trim();
+  if (first.startsWith('//')) {
+    return `https:${first}`;
+  }
+  return first;
+}
+
 function dedupeAndNormalizeResults(rawResults, platform, location, shipping = 10.0) {
   const seen = new Set();
   const normalized = [];
@@ -46,6 +67,7 @@ function dedupeAndNormalizeResults(rawResults, platform, location, shipping = 10
     const url = (result.url || '').trim();
     const title = (result.title || '').trim();
     const price = parsePrice(result.priceText || result.price || '');
+    const imageUrl = pickImageUrl(result);
 
     if (!url || !title || !price || seen.has(url)) {
       return;
@@ -58,6 +80,7 @@ function dedupeAndNormalizeResults(rawResults, platform, location, shipping = 10
       price,
       shipping,
       url,
+      imageUrl,
       location: location || 'your city',
       sellerCountry: '',
       sellerLocation: ''
@@ -140,6 +163,22 @@ async function extractFromAnyJsonScripts(page, baseUrl, pathHints = []) {
       return `${currency} ${rawPrice}`.trim();
     };
 
+    const toImageUrl = (node) => {
+      const rawImage =
+        node?.image ||
+        node?.image_url ||
+        node?.imageUrl ||
+        node?.thumbnail ||
+        node?.thumbnail_url ||
+        node?.photos?.[0]?.url ||
+        node?.pictures?.[0]?.url ||
+        node?.primary_image ||
+        node?.item?.image ||
+        '';
+      const imageCandidate = Array.isArray(rawImage) ? rawImage[0] : rawImage;
+      return toAbsoluteUrl(imageCandidate || '');
+    };
+
     const pushCandidate = (node) => {
       const rawUrl =
         node?.url ||
@@ -156,13 +195,14 @@ async function extractFromAnyJsonScripts(page, baseUrl, pathHints = []) {
       const title =
         (node?.name || node?.title || node?.listing_title || node?.item?.name || '').trim();
       const priceText = toPriceText(node);
+      const imageUrl = toImageUrl(node);
 
       if (!url || !title || !priceText || seen.has(url)) {
         return;
       }
 
       seen.add(url);
-      found.push({ title, priceText, url });
+      found.push({ title, priceText, url, imageUrl });
     };
 
     const walk = (node, depth = 0) => {
@@ -262,6 +302,22 @@ function collectCandidatesFromObject(node, baseUrl, pathHints, seen, found, maxD
     return `${currency} ${rawPrice}`.trim();
   };
 
+  const asImageUrl = (item) => {
+    const rawImage =
+      item?.image ||
+      item?.image_url ||
+      item?.imageUrl ||
+      item?.thumbnail ||
+      item?.thumbnail_url ||
+      item?.photos?.[0]?.url ||
+      item?.pictures?.[0]?.url ||
+      item?.primary_image ||
+      item?.item?.image ||
+      '';
+    const imageCandidate = Array.isArray(rawImage) ? rawImage[0] : rawImage;
+    return toAbsoluteUrl(imageCandidate || '');
+  };
+
   const pushCandidate = (item) => {
     const rawUrl =
       item?.url ||
@@ -278,12 +334,13 @@ function collectCandidatesFromObject(node, baseUrl, pathHints, seen, found, maxD
     const title =
       (item?.name || item?.title || item?.listing_title || item?.item?.name || '').trim();
     const priceText = asPriceText(item);
+    const imageUrl = asImageUrl(item);
     if (!url || !title || !priceText) {
       return;
     }
 
     seen.add(url);
-    found.push({ title, priceText, url });
+    found.push({ title, priceText, url, imageUrl });
   };
 
   if (Array.isArray(node)) {
@@ -543,7 +600,13 @@ async function scrapeVinted(item, location) {
             cardText.match(euroPattern)?.[0] ||
             '';
 
-          found.push({ title, priceText, url });
+          const imageUrl =
+            card.querySelector?.('img')?.getAttribute?.('src') ||
+            card.querySelector?.('img')?.getAttribute?.('data-src') ||
+            card.querySelector?.('img')?.getAttribute?.('srcset')?.split(',')?.[0]?.trim()?.split(' ')?.[0] ||
+            '';
+
+          found.push({ title, priceText, url, imageUrl });
         }
 
         return found;
@@ -583,6 +646,7 @@ async function scrapeVinted(item, location) {
         price: parsePrice(result.priceText),
         shipping: DEFAULT_SHIPPING,
         url: result.url,
+        imageUrl: result.imageUrl || '',
         location: location || 'your city',
         sellerCountry: 'Spain',
         sellerLocation: 'Spain'
@@ -639,6 +703,7 @@ async function searchEbay(item, location) {
       price: parseFloat(itemSummary.price?.value) || 0,
       shipping: parseFloat(itemSummary.shippingOptions?.[0]?.shippingCost?.value) || 3.0,
       url: itemSummary.itemWebUrl,
+      imageUrl: itemSummary.image?.imageUrl || itemSummary.thumbnailImages?.[0]?.imageUrl || '',
       location: location || 'your city',
       sellerCountry: itemSummary.itemLocation?.country || '',
       sellerLocation:
@@ -701,7 +766,13 @@ async function scrapeWallapop(item, location) {
         }
 
         seen.add(link);
-        found.push({ title, price, url: link });
+        const imageUrl =
+          el.querySelector('img')?.getAttribute('src') ||
+          el.querySelector('img')?.getAttribute('data-src') ||
+          el.querySelector('img')?.getAttribute('srcset')?.split(',')?.[0]?.trim()?.split(' ')?.[0] ||
+          '';
+
+        found.push({ title, price, url: link, imageUrl });
       });
 
       return found;
@@ -713,6 +784,7 @@ async function scrapeWallapop(item, location) {
       price: parsePrice(result.price),
       shipping: 3.0,
       url: result.url,
+      imageUrl: result.imageUrl || '',
       location: location || 'your city',
       sellerCountry: 'Spain',
       sellerLocation: 'Spain'
@@ -839,12 +911,18 @@ async function scrapeGrailed(item, location) {
           cardText.match(/\d[\d,]*(?:\.\d{2})?\s?(?:USD|EUR|GBP)/i)?.[0] ||
           containerText.match(/\d[\d,]*(?:\.\d{2})?\s?(?:USD|EUR|GBP)/i)?.[0] ||
           '';
+        const imageUrl =
+          container?.querySelector('img')?.getAttribute('src') ||
+          container?.querySelector('img')?.getAttribute('data-src') ||
+          card.querySelector('img')?.getAttribute('src') ||
+          card.querySelector('img')?.getAttribute('data-src') ||
+          '';
 
         if (!title || !priceText) {
           continue;
         }
 
-        found.push({ title, priceText, url: listingUrl });
+        found.push({ title, priceText, url: listingUrl, imageUrl });
       }
 
       return found;
@@ -872,13 +950,15 @@ async function scrapeGrailed(item, location) {
             node?.offers?.price || node?.offers?.lowPrice || node?.offers?.highPrice || '';
           const priceCurrency = node?.offers?.priceCurrency || '';
           const priceText = `${priceCurrency} ${priceValue}`.trim();
+          const imageCandidate = node?.image || node?.item?.image || '';
+          const imageUrl = toAbsoluteUrl(Array.isArray(imageCandidate) ? imageCandidate[0] : imageCandidate);
 
           if (!url || !title || !priceText || seen.has(url)) {
             return;
           }
 
           seen.add(url);
-          found.push({ title, priceText, url });
+          found.push({ title, priceText, url, imageUrl });
         };
 
         const walk = (node) => {
@@ -1021,11 +1101,16 @@ async function scrapeVestiaireCollective(item, location) {
           text.match(/[€$£]\s?\d[\d.,]*/)?.[0] ||
           '';
 
+        const imageUrl =
+          card.querySelector('img')?.getAttribute('src') ||
+          card.querySelector('img')?.getAttribute('data-src') ||
+          '';
+
         if (!title || !priceText) {
           continue;
         }
 
-        found.push({ title, priceText, url: listingUrl });
+        found.push({ title, priceText, url: listingUrl, imageUrl });
       }
 
       return found;
@@ -1053,13 +1138,15 @@ async function scrapeVestiaireCollective(item, location) {
             node?.offers?.price || node?.offers?.lowPrice || node?.offers?.highPrice || '';
           const priceCurrency = node?.offers?.priceCurrency || '';
           const priceText = `${priceCurrency} ${priceValue}`.trim();
+          const imageCandidate = node?.image || node?.item?.image || '';
+          const imageUrl = toAbsoluteUrl(Array.isArray(imageCandidate) ? imageCandidate[0] : imageCandidate);
 
           if (!url || !title || !priceText || seen.has(url)) {
             return;
           }
 
           seen.add(url);
-          found.push({ title, priceText, url });
+          found.push({ title, priceText, url, imageUrl });
         };
 
         const walk = (node) => {
