@@ -1,6 +1,8 @@
 Vintage & Secondhand Deal Finder
 
-A live search tool that finds the cheapest secondhand and vintage fashion pieces across multiple resale platforms — sorted by total landed price including shipping to your location.
+A personal project that runs locally and finds secondhand and vintage fashion pieces across multiple resale platforms, sorted by total landed price including shipping to your location.
+
+![Deal Finder app screenshot](screenshot.png)
 
 What it does
 
@@ -20,7 +22,7 @@ Run it locally
 
 Clone the repo
 Run npm install
-Add your eBay API keys to a .env file
+Copy `.env.example` to `.env` and add your eBay API credentials. Set `OPENAI_API_KEY` to enable image search with vision; text search works without it.
 Run npm start
 Open http://localhost:3000
 
